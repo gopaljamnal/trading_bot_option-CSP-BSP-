@@ -1,0 +1,345 @@
+"""
+Cash Secured Put (CSP) Screener
+Simple, clean script for screening CSP opportunities
+"""
+
+import pandas as pd
+import yfinance as yf
+from datetime import datetime
+from typing import List, Dict, Optional
+import logging
+
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
+logger = logging.getLogger(__name__)
+
+# =============================================================================
+# CONFIGURATION - EASY TO MODIFY
+# =============================================================================
+
+# Stock Watchlist (Modify as needed)
+WATCHLIST = [
+    'NVDA', 'MSFT', 'AAPL', 'AMZN', 'META', 'AVGO', 'GOOGL','GOOG', 'TSLA', 'BRKB',
+     'JPM', 'WMT', 'ORCL', 'LLY', 'V', 'MA', 'XOM', 'NFLX', 'PLTR', 'JNJ', 'AMD',
+    'COST', 'ABBV', 'BAC', 'HD', 'PG', 'UNH','GE', 'CVX','KO', 'IBM', 'CSCO','WFC', 
+    'MS', 'MU', 'AXP', 'TMUS', 'CAT', 'GS', 'CRM', 'RTX', 'PM', 'ABT', 'MCD', 
+    'MRK', 'APP', 'TMO', 'LIN', 'PEP', 'DIS', 'UBER', 'INTC', 'ANET', 'LRCX',
+    'QCOM', 'NOW', 'ISRG', 'INTU', 'AMAT', 'T', 'C', 'BLK', 'BKNG', 'NEE', 'SCHW',
+    'BA', 'APH', 'VZ', 'TJX', 'KLAC', 'AMGN', 'ACN', 'GEV', 'DHR', 'TXN', 'SPGI',
+    'PANW', 'ADBE', 'BSX', 'ETN', 'GILD', 'SYK', 'COF', 'PFE', 'CRWD', 'LOW', 
+    'HON', 'HOOD', 'UNP', 'DE', 'PGR', 'CEG', 'MDT', 'WELL', 'BX', 'ADI', 'PLD', 
+    'ADP', 'LMT', 'DASH', 'DELL', 'HCA', 'CB', 'COP', 'KKR', 'CMCSA', 'VRTX',
+    'MO', 'CVS', 'SO', 'MCK', 'NKE', 'DUK', 'PH', 'SBUX', 'CME', 'TT', 'GD', 'CDNS',
+    'COIN', 'ICE', 'MMC', 'MMM', 'SHW', 'MCO', 'BMY', 'NEM', 'AMT', 'NOC', 'SNPS',
+    'EQIX', 'WM', 'CI', 'HWM', 'ORLY', 'UPS', 'ABNB', 'RCL', 'ECL', 'CTAS', 
+    'ELV', 'TDG', 'BK', 'EMR', 'GLW', 'USB', 'MDLZ', 'MSI', 'MAR', 'JCI', 'ITW',
+    'PNC', 'APO', 'AON', 'TEL', 'PYPL', 'WMB', 'FI', 'REGN', 'AJG', 'RSG', 'MNST',
+    'ADSK', 'CSX', 'COR', 'FTNT', 'PWR', 'GM', 'ZTS', 'VST', 'AZO', 'WDAY', 'NSC',
+    'CL', 'AEP', 'SRE', 'HLT', 'TRV', 'DLR', 'AXON', 'FCX', 'FDX', 'KMI', 'MPC',
+    'EOG', 'SPG', 'AFL', 'TFC', 'CMI', 'APD', 'URI', 'DDOG', 'O', 'PSX', 'CMG', 
+    'NXPI', 'LHX', 'SLB', 'BDX', 'MET', 'PSA', 'F', 'MPWR', 'ROST', 'WBD', 'PCAR',
+    'VLO', 'D', 'IDXX', 'ALL', 'NDAQ', 'CARR', 'EA', 'STX', 'ROP', 'XYZ', 'EW',
+    'EXC', 'FAST', 'CBRE', 'BKR', 'GRMN', 'TTWO', 'XEL', 'DHI', 'GWW', 'AMP',
+    'EBAY', 'MSCI', 'KR', 'PAYX', 'WDC', 'TGT', 'OKE', 'AME', 'AIG', 'CTVA', 
+    'ETR', 'CPRT', 'CCI', 'A', 'FANG', 'ROK', 'PEG', 'OXY', 'KMB', 'FICO', 'LVS',
+    'YUM', 'KDP', 'CAH', 'VMC', 'DAL', 'RMD', 'MLM', 'IQV', 'WEC', 'XYL', 'SYY',
+    'CCL', 'SOFI', 'HIMS'    
+    ]
+
+
+# CSP Screening Criteria
+MIN_DTE = 1                 # Minimum days to expiration
+MAX_DTE = 30                 # Maximum days to expiration
+MIN_OTM_PERCENT = 10         # Minimum % out of the money
+MAX_OTM_PERCENT = 15        # Maximum % out of the money
+MIN_RETURN_ON_RISK = 5     # Minimum 5% return on risk
+MIN_PREMIUM = 0.30          # Minimum $0.30 premium per share
+MIN_VOLUME = 10             # Minimum option volume
+MIN_OPEN_INTEREST = 50      # Minimum open interest
+
+# Display Settings
+MAX_RESULTS_TO_SHOW = 20    # Number of top results to display
+
+# =============================================================================
+# HELPER FUNCTIONS
+# =============================================================================
+
+def get_current_price(symbol: str) -> Optional[float]:
+    """Get current stock price"""
+    try:
+        ticker = yf.Ticker(symbol)
+        data = ticker.history(period='1d')
+        if not data.empty:
+            return float(data['Close'].iloc[-1])
+    except Exception as e:
+        logger.error(f"Error getting price for {symbol}: {e}")
+    return None
+
+def get_options_chain(symbol: str) -> Optional[pd.DataFrame]:
+    """Get put options chain filtered by DTE"""
+    try:
+        ticker = yf.Ticker(symbol)
+        expirations = ticker.options
+        
+        if not expirations:
+            return None
+        
+        all_puts = []
+        current_date = datetime.now()
+        
+        for exp_str in expirations:
+            try:
+                exp_date = datetime.strptime(exp_str, '%Y-%m-%d')
+                dte = (exp_date - current_date).days
+                
+                # Filter by DTE range
+                if MIN_DTE <= dte <= MAX_DTE:
+                    chain = ticker.option_chain(exp_str)
+                    puts = chain.puts.copy()
+                    puts['expiry_date'] = exp_date
+                    puts['expiry_str'] = exp_str
+                    puts['dte'] = dte
+                    all_puts.append(puts)
+                    
+            except Exception as e:
+                logger.debug(f"Error processing expiration {exp_str}: {e}")
+        
+        if all_puts:
+            return pd.concat(all_puts, ignore_index=True)
+        
+    except Exception as e:
+        logger.error(f"Error fetching options for {symbol}: {e}")
+    
+    return None
+
+# =============================================================================
+# CSP SCREENER
+# =============================================================================
+
+def screen_csp(symbol: str) -> List[Dict]:
+    """Screen for Cash Secured Put opportunities on a single stock"""
+    candidates = []
+    
+    # Get current price
+    current_price = get_current_price(symbol)
+    if not current_price:
+        return candidates
+    
+    # Get options chain
+    chain = get_options_chain(symbol)
+    if chain is None or len(chain) == 0:
+        return candidates
+    
+    # Calculate target strike range
+    min_strike = current_price * (1 - MAX_OTM_PERCENT / 100)
+    max_strike = current_price * (1 - MIN_OTM_PERCENT / 100)
+    
+    # Filter options chain
+    chain = chain[
+        (chain['strike'] >= min_strike) &
+        (chain['strike'] <= max_strike) &
+        (chain['volume'] >= MIN_VOLUME) &
+        (chain['openInterest'] >= MIN_OPEN_INTEREST) &
+        (chain['bid'] > 0) &
+        (chain['ask'] > 0)
+    ]
+    
+    # Process each qualifying option
+    for _, row in chain.iterrows():
+        strike = float(row['strike'])
+        bid = float(row['bid'])
+        ask = float(row['ask'])
+        premium = (bid + ask) / 2
+        
+        # Skip if premium too small
+        if premium < MIN_PREMIUM:
+            continue
+        
+        # Calculate metrics
+        otm_percent = ((current_price - strike) / current_price) * 100
+        return_on_risk = (premium / strike) * 100
+        max_risk = strike * 100  # Per contract (100 shares)
+        max_profit = premium * 100  # Per contract
+        
+        # Check if meets return criteria
+        if return_on_risk >= MIN_RETURN_ON_RISK:
+            dte = int(row['dte'])
+            annualized_return = return_on_risk * (365 / dte) if dte > 0 else 0
+            
+            candidates.append({
+                'symbol': symbol,
+                'current_price': current_price,
+                'strike': strike,
+                'premium': premium,
+                'bid': bid,
+                'ask': ask,
+                'otm_percent': otm_percent,
+                'return_on_risk': return_on_risk,
+                'annualized_return': annualized_return,
+                'max_risk': max_risk,
+                'max_profit': max_profit,
+                'expiry_str': row['expiry_str'],
+                'dte': dte,
+                'volume': int(row['volume']),
+                'open_interest': int(row['openInterest'])
+            })
+    
+    return candidates
+
+def screen_all_stocks(watchlist: List[str]) -> List[Dict]:
+    """Screen all stocks in watchlist for CSP opportunities"""
+    
+    logger.info("\n" + "="*80)
+    logger.info("CASH SECURED PUT (CSP) SCREENER")
+    logger.info("="*80)
+    logger.info(f"Screening {len(watchlist)} stocks")
+    logger.info(f"DTE Range: {MIN_DTE}-{MAX_DTE} days")
+    logger.info(f"OTM Range: {MIN_OTM_PERCENT}-{MAX_OTM_PERCENT}%")
+    logger.info(f"Min Return on Risk: {MIN_RETURN_ON_RISK}%")
+    logger.info("="*80 + "\n")
+    
+    all_candidates = []
+    
+    for i, symbol in enumerate(watchlist, 1):
+        logger.info(f"[{i}/{len(watchlist)}] Screening {symbol}...")
+        
+        try:
+            candidates = screen_csp(symbol)
+            all_candidates.extend(candidates)
+            
+            if candidates:
+                logger.info(f"  ✅ Found {len(candidates)} CSP opportunities")
+            else:
+                logger.info(f"  ❌ No CSP opportunities found")
+                
+        except Exception as e:
+            logger.error(f"  Error screening {symbol}: {e}")
+    
+    # Sort by annualized return
+    all_candidates.sort(key=lambda x: x['annualized_return'], reverse=True)
+    
+    logger.info(f"\n{'='*80}")
+    logger.info(f"SCREENING COMPLETE - Found {len(all_candidates)} total opportunities")
+    logger.info(f"{'='*80}\n")
+    
+    return all_candidates
+
+# =============================================================================
+# DISPLAY FUNCTIONS
+# =============================================================================
+
+def display_results(candidates: List[Dict]):
+    """Display CSP screening results in formatted table"""
+    
+    if not candidates:
+        print("\n❌ No CSP opportunities found matching criteria")
+        print("\nTry adjusting:")
+        print("  - Increase MAX_DTE (more time = more options)")
+        print("  - Decrease MIN_RETURN_ON_RISK (lower threshold)")
+        print("  - Increase MAX_OTM_PERCENT (further OTM strikes)")
+        return
+    
+    print("\n" + "="*100)
+    print(f"TOP {min(len(candidates), MAX_RESULTS_TO_SHOW)} CASH SECURED PUT OPPORTUNITIES")
+    print("="*100)
+    print(f"Total Found: {len(candidates)}")
+    print("="*100 + "\n")
+    
+    for i, trade in enumerate(candidates[:MAX_RESULTS_TO_SHOW], 1):
+        print(f"{i:2d}. {trade['symbol']:6s} | Current: ${trade['current_price']:7.2f} | "
+              f"Strike: ${trade['strike']:7.2f} ({trade['otm_percent']:.1f}% OTM)")
+        print(f"    Premium: ${trade['premium']:.2f} (Bid/Ask: ${trade['bid']:.2f}/${trade['ask']:.2f})")
+        print(f"    Max Profit: ${trade['max_profit']:.2f} | Max Risk: ${trade['max_risk']:,.0f}")
+        print(f"    Return on Risk: {trade['return_on_risk']:.2f}% | "
+              f"Annualized: {trade['annualized_return']:.0f}%")
+        print(f"    Expiry: {trade['expiry_str']} ({trade['dte']} DTE) | "
+              f"Vol: {trade['volume']} | OI: {trade['open_interest']}")
+        print("-"*100)
+    
+    # Summary statistics
+    print("\n" + "="*100)
+    print("SUMMARY STATISTICS")
+    print("="*100)
+    
+    avg_return = sum(t['return_on_risk'] for t in candidates) / len(candidates)
+    avg_annual = sum(t['annualized_return'] for t in candidates) / len(candidates)
+    avg_premium = sum(t['premium'] for t in candidates) / len(candidates)
+    avg_dte = sum(t['dte'] for t in candidates) / len(candidates)
+    
+    print(f"Average Return on Risk: {avg_return:.2f}%")
+    print(f"Average Annualized Return: {avg_annual:.0f}%")
+    print(f"Average Premium: ${avg_premium:.2f}")
+    print(f"Average DTE: {avg_dte:.1f} days")
+    
+    # Show top symbols
+    symbol_counts = {}
+    for t in candidates:
+        symbol_counts[t['symbol']] = symbol_counts.get(t['symbol'], 0) + 1
+    
+    top_symbols = sorted(symbol_counts.items(), key=lambda x: x[1], reverse=True)[:5]
+    
+    print(f"\nTop 5 Stocks with Most Opportunities:")
+    for symbol, count in top_symbols:
+        print(f"  {symbol}: {count} opportunities")
+    
+    print("="*100)
+
+def export_to_csv(candidates: List[Dict], filename: str = None):
+    """Export results to CSV file"""
+    if not candidates:
+        logger.warning("No data to export")
+        return
+    
+    if filename is None:
+        filename = f"csp_screening_{datetime.now().strftime('%Y%m%d_%H%M')}.csv"
+    
+    df = pd.DataFrame(candidates)
+    
+    # Reorder columns for better readability
+    columns_order = [
+        'symbol', 'current_price', 'strike', 'premium', 'bid', 'ask',
+        'otm_percent', 'return_on_risk', 'annualized_return',
+        'max_profit', 'max_risk', 'expiry_str', 'dte',
+        'volume', 'open_interest'
+    ]
+    
+    df = df[columns_order]
+    df.to_csv(filename, index=False)
+    
+    logger.info(f"\n✅ Results exported to {filename}")
+
+# =============================================================================
+# MAIN EXECUTION
+# =============================================================================
+
+def main():
+    """Main execution function"""
+    
+    print("\n" + "="*100)
+    print("🎯 CASH SECURED PUT (CSP) SCREENER")
+    print("="*100)
+    print(f"Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print("="*100)
+    
+    # Run screening
+    candidates = screen_all_stocks(WATCHLIST)
+    
+    # Display results
+    display_results(candidates)
+    
+    # Export to CSV
+    if candidates:
+        export_to_csv(candidates)
+        
+        print("\n" + "="*100)
+        print("💡 NEXT STEPS")
+        print("="*100)
+        print("1. Review top opportunities above")
+        print("2. Check news for selected symbols (use news_analyzer.py)")
+        print("3. Verify technical support levels")
+        print("4. Select 2-3 best trades")
+        print("5. Execute trades with proper position sizing")
+        print("="*100 + "\n")
+
+if __name__ == "__main__":
+    main()
